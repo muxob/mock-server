@@ -1,10 +1,6 @@
 package com.example.mockserver.provider;
 
-import com.example.mockserver.provider.dto.FollowUpDto;
-import com.example.mockserver.provider.dto.FollowUpGroupDto;
-import com.example.mockserver.provider.dto.TransactionDto;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.example.mockserver.provider.dto.*;
 import com.example.mockserver.provider.ProviderPackageWriter.MockSignature;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -26,21 +22,15 @@ public class ProviderService {
     // private final ConcurrentMap<String, byte[]> uploadedFiles = new ConcurrentHashMap<>();
     // private final ConcurrentMap<String, String> requests = new ConcurrentHashMap<>();
 
-    private final ObjectMapper objectMapper;
     private final ProviderKeyMaterial keyMaterial;
     private final ProviderPackageWriter packageWriter;
 
-    public ProviderService(
-            ObjectMapper objectMapper,
-            ProviderKeyMaterial keyMaterial,
-            ProviderPackageWriter packageWriter)
-    {
-        this.objectMapper = objectMapper;
+    public ProviderService(ProviderKeyMaterial keyMaterial, ProviderPackageWriter packageWriter) {
         this.keyMaterial = keyMaterial;
         this.packageWriter = packageWriter;
     }
 
-    public FollowUpGroupDto sendDeclaration(String data, MultipartFile doc) {
+    public FollowUpGroupDto sendDeclaration(DeclarationSpec spec, MultipartFile doc) {
         String id = nextId("mock-declaration-");
         DocumentState state = new DocumentState(fileName(doc, "declaration.pdf"), bytes(doc));
         declarations.put(id, state);
@@ -49,21 +39,22 @@ public class ProviderService {
         return new FollowUpGroupDto("mock-thread", List.of(new TransactionDto(id)));
     }
 
-    public FollowUpDto initializeOtp(String data, MultipartFile signedFile) {
+    public FollowUpDto initializeOtp(InitSpec spec, MultipartFile signedFile) {
         String id = nextId("mock-otp-");
-        JsonNode body = parse(data);
-        List<String> names = descriptions(body);
+        List<String> names = spec.documents() == null ? List.of()
+                : spec.documents().stream().map(InitSpec.DocumentDescription::description).toList();
         otpDocuments.put(id, names);
         // uploadedFiles.put("otp", bytes(signedFile));
         // requests.put("otp-init", safe(data));
         return new FollowUpDto("mock-thread", id);
     }
 
-    public FollowUpDto signGroup(String data) {
-        JsonNode body = parse(data);
+    public FollowUpDto signGroup(SignSpec spec) {
         List<MockSignature> signatures = new ArrayList<>();
-        for (JsonNode document : body.path("documents")) {
-            signatures.add(sign("agent", document.path("description").asText("document.pdf"), document.path("hash").asText()));
+        if (spec.documents() != null) {
+            for (var document : spec.documents()) {
+                signatures.add(sign("agent", defaultName(document.description()), document.hash()));
+            }
         }
         String id = nextId("mock-group-");
         groupSignatures.put(id, List.copyOf(signatures));
@@ -71,12 +62,10 @@ public class ProviderService {
         return new FollowUpDto("mock-thread", id);
     }
 
-    public void signOtp(String data) {
-        JsonNode body = parse(data);
-        String id = body.path("transactionID").asText();
+    public void signOtp(OtpSignSpec spec) {
+        String id = spec.transactionID();
         List<String> names = otpDocuments.getOrDefault(id, List.of());
-        List<String> hashes = new ArrayList<>();
-        body.path("hash").forEach(node -> hashes.add(node.asText()));
+        List<String> hashes = spec.hash() == null ? List.of() : spec.hash();
         List<MockSignature> signatures = new ArrayList<>();
         for (int i = 0; i < hashes.size(); i++) {
             String name = i < names.size() ? names.get(i) : "document-" + (i + 1) + ".pdf";
@@ -86,9 +75,8 @@ public class ProviderService {
         // requests.put("otp-sign", safe(data));
     }
 
-    public byte[] downloadDeclaration(String data) {
-        JsonNode body = parse(data);
-        String id = body.path("transactionID").asText();
+    public byte[] downloadDeclaration(DocumentSpec spec) {
+        String id = spec.transactionID();
         DocumentState state = declarations.get(id);
         if (state == null) throw new IllegalArgumentException("Unknown declaration transaction: " + id);
         try {
@@ -98,19 +86,14 @@ public class ProviderService {
         }
     }
 
-    public byte[] downloadGroupSignatures(String data) {
-        return downloadHashes(data, groupSignatures);
-    }
-
-    public byte[] downloadOtpSignatures(String data) {
-        return downloadHashes(data, otpSignatures);
-    }
+    public byte[] downloadGroupSignatures(DocumentSpec spec) { return downloadHashes(spec, groupSignatures); }
+    public byte[] downloadOtpSignatures(DocumentSpec spec) { return downloadHashes(spec, otpSignatures); }
 
     // public byte[] getUploadedFile(String name) { return uploadedFiles.get(name); }
     // public String getReceivedRequest(String name) { return requests.get(name); }
 
-    private byte[] downloadHashes(String data, ConcurrentMap<String, List<MockSignature>> store) {
-        String id = parse(data).path("transactionID").asText();
+    private byte[] downloadHashes(DocumentSpec spec, ConcurrentMap<String, List<MockSignature>> store) {
+        String id = spec.transactionID();
         List<MockSignature> signatures = store.get(id);
         if (signatures == null) throw new IllegalArgumentException("No mock signatures for transaction: " + id);
         try { return packageWriter.signedHashes(id, signatures); }
@@ -122,22 +105,13 @@ public class ProviderService {
         catch (Exception e) { throw new IllegalArgumentException("Could not sign document hash for " + name, e); }
     }
 
-    private List<String> descriptions(JsonNode body) {
-        List<String> names = new ArrayList<>();
-        body.path("documents").forEach(node -> names.add(node.path("description").asText("document.pdf")));
-        return names;
-    }
-
-    private JsonNode parse(String json) {
-        try { return objectMapper.readTree(json == null ? "{}" : json); }
-        catch (Exception e) { throw new IllegalArgumentException("Invalid Provider mock request JSON", e); }
-    }
-
     private String nextId(String prefix) {
         return prefix + sequence.incrementAndGet();
     }
 
     /*private static String safe(String value) { return value == null ? "{}" : value; }*/
+
+    private static String defaultName(String name) { return name == null || name.isBlank() ? "document.pdf" : name; }
 
     private static String fileName(MultipartFile file, String fallback) {
         String name = file.getOriginalFilename();
