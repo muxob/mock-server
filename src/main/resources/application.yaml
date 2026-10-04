@@ -1,3 +1,15 @@
+server:
+  port: 9080
+
 spring:
   application:
     name: mock-server
+
+provider:
+  package-public-key: file:D:/work/certs/mock-server/mock-package-public.pem
+  client-private-key: file:D:/work/certs/mock-server/mock-client-private.pem
+  agent-private-key: file:D:/work/certs/mock-server/mock-agent-private.pem
+  client-certificate: file:D:/work/certs/mock-server/mock-client-base64.txt
+  agent-certificate: file:D:/work/certs/mock-server/mock-agent-base64.txt
+
+
